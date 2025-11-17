@@ -83,10 +83,11 @@ def create_app(config_name: str = 'default') -> Flask:
     register_error_handlers(app)
     
     # Register blueprints
-    from app.routes import parts, compatibility, builds
+    from app.routes import parts, compatibility, builds, recommendations
     app.register_blueprint(parts.bp, url_prefix='/api/v1/parts')
     app.register_blueprint(compatibility.bp, url_prefix='/api/v1/compatibility')
     app.register_blueprint(builds.bp, url_prefix='/api/v1/builds')
+    app.register_blueprint(recommendations.bp, url_prefix='/api/v1/recommendations')
     
     # Serve frontend files
     @app.route('/')
