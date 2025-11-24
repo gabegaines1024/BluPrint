@@ -2,23 +2,27 @@
 
 from typing import Dict, Any, Tuple
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import or_
 import logging
 
 from app.database import db
 from app.models import Part
 from app.utils.validation import validate_part_data
-from app.exceptions import ValidationError
+from app.utils.auth import get_current_user_id
+from app.exceptions import ValidationError, AuthorizationError, NotFoundError
 
 bp = Blueprint('parts', __name__)
 logger = logging.getLogger(__name__)
 
 
 @bp.route('', methods=['GET'])
+@jwt_required()
 def get_parts() -> Tuple[Dict[str, Any], int]:
-    """Get a list of parts with optional filtering."""
+    """Get a list of parts with optional filtering (user's parts only)."""
     try:
-        query = Part.query
+        user_id = get_jwt_identity()
+        query = Part.query.filter_by(user_id=user_id)
         
         # Apply filters
         part_type = request.args.get('part_type')
@@ -51,20 +55,30 @@ def get_parts() -> Tuple[Dict[str, Any], int]:
 
 
 @bp.route('/<int:part_id>', methods=['GET'])
+@jwt_required()
 def get_part(part_id: int) -> Tuple[Dict[str, Any], int]:
-    """Get a specific part by ID."""
+    """Get a specific part by ID (must be owned by user)."""
     try:
-        part = Part.query.get_or_404(part_id)
+        user_id = get_jwt_identity()
+        part = Part.query.filter_by(id=part_id, user_id=user_id).first()
+        
+        if not part:
+            raise NotFoundError('Part not found')
+        
         return jsonify(part.to_dict()), 200
+    except NotFoundError as e:
+        return jsonify({'error': e.message}), e.status_code
     except Exception as e:
         logger.error(f'Error getting part {part_id}: {e}', exc_info=True)
         return jsonify({'error': 'Failed to retrieve part'}), 500
 
 
 @bp.route('', methods=['POST'])
+@jwt_required()
 def create_part() -> Tuple[Dict[str, Any], int]:
-    """Create a new part."""
+    """Create a new part (owned by current user)."""
     try:
+        user_id = get_jwt_identity()
         data = request.get_json()
         
         # Validate input
@@ -72,6 +86,7 @@ def create_part() -> Tuple[Dict[str, Any], int]:
         
         # Create part
         part = Part(
+            user_id=user_id,
             name=data['name'].strip(),
             part_type=data['part_type'],
             manufacturer=data.get('manufacturer'),
@@ -82,6 +97,7 @@ def create_part() -> Tuple[Dict[str, Any], int]:
         db.session.add(part)
         db.session.commit()
         
+        logger.info(f'Part created: {part.id} by user {user_id}')
         return jsonify(part.to_dict()), 201
         
     except ValidationError as e:
@@ -93,10 +109,16 @@ def create_part() -> Tuple[Dict[str, Any], int]:
 
 
 @bp.route('/<int:part_id>', methods=['PUT'])
+@jwt_required()
 def update_part(part_id: int) -> Tuple[Dict[str, Any], int]:
-    """Update an existing part."""
+    """Update an existing part (must be owned by user)."""
     try:
-        part = Part.query.get_or_404(part_id)
+        user_id = get_jwt_identity()
+        part = Part.query.filter_by(id=part_id, user_id=user_id).first()
+        
+        if not part:
+            raise NotFoundError('Part not found')
+        
         data = request.get_json()
         
         if not data:
@@ -119,8 +141,11 @@ def update_part(part_id: int) -> Tuple[Dict[str, Any], int]:
         
         db.session.commit()
         
+        logger.info(f'Part updated: {part_id} by user {user_id}')
         return jsonify(part.to_dict()), 200
         
+    except NotFoundError as e:
+        return jsonify({'error': e.message}), e.status_code
     except ValidationError as e:
         return jsonify({'error': e.message}), 400
     except Exception as e:
@@ -130,16 +155,24 @@ def update_part(part_id: int) -> Tuple[Dict[str, Any], int]:
 
 
 @bp.route('/<int:part_id>', methods=['DELETE'])
+@jwt_required()
 def delete_part(part_id: int) -> Tuple[Dict[str, Any], int]:
-    """Delete a part."""
+    """Delete a part (must be owned by user)."""
     try:
-        part = Part.query.get_or_404(part_id)
+        user_id = get_jwt_identity()
+        part = Part.query.filter_by(id=part_id, user_id=user_id).first()
+        
+        if not part:
+            raise NotFoundError('Part not found')
         
         db.session.delete(part)
         db.session.commit()
         
+        logger.info(f'Part deleted: {part_id} by user {user_id}')
         return jsonify({'message': 'Part deleted successfully'}), 200
         
+    except NotFoundError as e:
+        return jsonify({'error': e.message}), e.status_code
     except Exception as e:
         db.session.rollback()
         logger.error(f'Error deleting part {part_id}: {e}', exc_info=True)

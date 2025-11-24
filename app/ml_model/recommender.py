@@ -85,7 +85,8 @@ class MLRecommender:
                        user_preferences: Dict[str, Any],
                        budget: float,
                        existing_parts: Optional[List[int]] = None,
-                       num_recommendations: int = 10) -> List[Dict[str, Any]]:
+                       num_recommendations: int = 10,
+                       user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Generate part recommendations based on user preferences.
         
         Args:
@@ -103,11 +104,11 @@ class MLRecommender:
         """
         if not self.is_available():
             logger.warning('Model not available, falling back to rule-based recommendations')
-            return self._fallback_recommendations(user_preferences, budget, existing_parts, num_recommendations)
+            return self._fallback_recommendations(user_preferences, budget, existing_parts, num_recommendations, user_id)
         
         try:
             # Get candidate parts
-            candidates = self._get_candidate_parts(user_preferences, budget, existing_parts)
+            candidates = self._get_candidate_parts(user_preferences, budget, existing_parts, user_id)
             
             if not candidates:
                 return []
@@ -144,23 +145,29 @@ class MLRecommender:
             
         except Exception as e:
             logger.error(f'Error generating recommendations: {e}', exc_info=True)
-            return self._fallback_recommendations(user_preferences, budget, existing_parts, num_recommendations)
+            return self._fallback_recommendations(user_preferences, budget, existing_parts, num_recommendations, user_id)
     
     def _get_candidate_parts(self, 
                             user_preferences: Dict[str, Any],
                             budget: float,
-                            existing_parts: Optional[List[int]]) -> List[Part]:
+                            existing_parts: Optional[List[int]],
+                            user_id: Optional[int] = None) -> List[Part]:
         """Get candidate parts matching user preferences.
         
         Args:
             user_preferences: User preference dictionary.
             budget: Budget constraint.
             existing_parts: Already selected parts.
+            user_id: User ID to filter parts by ownership.
         
         Returns:
             List of candidate Part objects.
         """
         query = Part.query.filter(Part.price.isnot(None), Part.price > 0)
+        
+        # Filter by user if provided
+        if user_id is not None:
+            query = query.filter(Part.user_id == user_id)
         
         # Filter by part type if specified
         part_type = user_preferences.get('part_type')
@@ -303,7 +310,8 @@ class MLRecommender:
                                  user_preferences: Dict[str, Any],
                                  budget: float,
                                  existing_parts: Optional[List[int]],
-                                 num_recommendations: int) -> List[Dict[str, Any]]:
+                                 num_recommendations: int,
+                                 user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fallback to rule-based recommendations when ML model unavailable.
         
         Args:
@@ -323,7 +331,8 @@ class MLRecommender:
                 part_type=user_preferences.get('part_type'),
                 budget=budget,
                 existing_parts=existing_parts,
-                limit=num_recommendations
+                limit=num_recommendations,
+                user_id=user_id
             )
         except Exception as e:
             logger.error(f'Fallback recommender failed: {e}')

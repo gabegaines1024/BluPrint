@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Optional, Tuple
 from app.exceptions import ValidationError
+from app.utils.spec_validation import validate_specifications
 
 
 def validate_part_data(data: Optional[Dict[str, Any]], is_update: bool = False) -> Tuple[bool, Optional[str]]:
@@ -58,7 +59,14 @@ def validate_part_data(data: Optional[Dict[str, Any]], is_update: bool = False) 
     
     # Validate specifications if provided
     if 'specifications' in data and data['specifications'] is not None:
-        if not isinstance(data['specifications'], dict):
+        part_type = data.get('part_type')
+        if part_type:
+            # Validate against schema for part type
+            try:
+                data['specifications'] = validate_specifications(part_type, data['specifications'])
+            except ValidationError:
+                raise  # Re-raise validation errors
+        elif not isinstance(data['specifications'], dict):
             raise ValidationError('Specifications must be a JSON object')
     
     return True, None

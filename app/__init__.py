@@ -4,27 +4,43 @@ import logging
 from pathlib import Path
 from flask import Flask, send_from_directory, jsonify
 from flask_cors import CORS
+from flask_jwt_extended import JWTManager
+from flask_bcrypt import Bcrypt
 
 from config import config
 from app.database import db, migrate
 from app.cache import cache
-from app.exceptions import AppError
+from app.exceptions import AppError, AuthenticationError, AuthorizationError
 
 logger = logging.getLogger(__name__)
 
 
 def setup_logging(app: Flask) -> None:
     """Configure application logging."""
-    if not app.debug:
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s %(levelname)s %(name)s %(message)s'
-        )
-    else:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format='%(asctime)s %(levelname)s %(name)s %(message)s'
-        )
+    import os
+    from pathlib import Path
+    
+    log_level = getattr(app.config, 'LOG_LEVEL', 'INFO')
+    log_file = getattr(app.config, 'LOG_FILE', 'app.log')
+    
+    # Create logs directory if it doesn't exist
+    log_path = Path(log_file)
+    if log_path.parent != Path('.'):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Configure logging with file handler
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper(), logging.INFO),
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()  # Also log to console
+        ]
+    )
+    
+    # Set specific logger levels
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
+    logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
 
 
 def register_error_handlers(app: Flask) -> None:
@@ -33,6 +49,26 @@ def register_error_handlers(app: Flask) -> None:
     @app.errorhandler(AppError)
     def handle_app_error(error: AppError):
         """Handle application-specific errors."""
+        response = jsonify({
+            'error': error.message,
+            'status_code': error.status_code
+        })
+        response.status_code = error.status_code
+        return response
+    
+    @app.errorhandler(AuthenticationError)
+    def handle_auth_error(error: AuthenticationError):
+        """Handle authentication errors."""
+        response = jsonify({
+            'error': error.message,
+            'status_code': error.status_code
+        })
+        response.status_code = error.status_code
+        return response
+    
+    @app.errorhandler(AuthorizationError)
+    def handle_authorization_error(error: AuthorizationError):
+        """Handle authorization errors."""
         response = jsonify({
             'error': error.message,
             'status_code': error.status_code
@@ -60,6 +96,17 @@ def register_error_handlers(app: Flask) -> None:
         })
         response.status_code = 500
         return response
+    
+    # JWT error handlers
+    @app.errorhandler(401)
+    def handle_jwt_error(error):
+        """Handle JWT authentication errors."""
+        response = jsonify({
+            'error': 'Authentication required',
+            'status_code': 401
+        })
+        response.status_code = 401
+        return response
 
 
 def create_app(config_name: str = 'default') -> Flask:
@@ -75,6 +122,8 @@ def create_app(config_name: str = 'default') -> Flask:
     migrate.init_app(app, db)
     cache.init_app(app)
     CORS(app)
+    JWTManager(app)
+    Bcrypt(app)
     
     # Setup logging
     setup_logging(app)
@@ -83,7 +132,8 @@ def create_app(config_name: str = 'default') -> Flask:
     register_error_handlers(app)
     
     # Register blueprints
-    from app.routes import parts, compatibility, builds, recommendations
+    from app.routes import auth, parts, compatibility, builds, recommendations
+    app.register_blueprint(auth.bp, url_prefix='/api/v1/auth')
     app.register_blueprint(parts.bp, url_prefix='/api/v1/parts')
     app.register_blueprint(compatibility.bp, url_prefix='/api/v1/compatibility')
     app.register_blueprint(builds.bp, url_prefix='/api/v1/builds')

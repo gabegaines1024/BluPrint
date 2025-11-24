@@ -15,7 +15,8 @@ class RuleBasedRecommender:
                  part_type: Optional[str] = None,
                  budget: float = 1000.0,
                  existing_parts: Optional[List[int]] = None,
-                 limit: int = 10) -> List[Dict[str, Any]]:
+                 limit: int = 10,
+                 user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Generate rule-based recommendations.
         
         Args:
@@ -28,6 +29,10 @@ class RuleBasedRecommender:
             List of recommended parts with basic scoring.
         """
         query = Part.query.filter(Part.price.isnot(None), Part.price > 0)
+        
+        # Filter by user if provided
+        if user_id is not None:
+            query = query.filter(Part.user_id == user_id)
         
         if part_type:
             query = query.filter(Part.part_type == part_type)

@@ -39,3 +39,27 @@ class NotFoundError(AppError):
         """
         super().__init__(message, status_code=404)
 
+
+class AuthenticationError(AppError):
+    """Exception raised for authentication errors."""
+    
+    def __init__(self, message: str = "Authentication failed"):
+        """Initialize authentication error with 401 status code.
+        
+        Args:
+            message: Authentication error message.
+        """
+        super().__init__(message, status_code=401)
+
+
+class AuthorizationError(AppError):
+    """Exception raised for authorization errors."""
+    
+    def __init__(self, message: str = "Access denied"):
+        """Initialize authorization error with 403 status code.
+        
+        Args:
+            message: Authorization error message.
+        """
+        super().__init__(message, status_code=403)
+

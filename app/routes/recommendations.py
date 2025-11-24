@@ -2,9 +2,11 @@
 
 from typing import Dict, Any, Tuple
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
 import logging
 
 from app.ml_model.recommender import MLRecommender
+from app.models import Part
 from app.exceptions import ValidationError
 
 bp = Blueprint('recommendations', __name__)
@@ -26,6 +28,7 @@ def get_recommender() -> MLRecommender:
 
 
 @bp.route('/parts', methods=['POST'])
+@jwt_required()
 def recommend_parts() -> Tuple[Dict[str, Any], int]:
     """Get ML-based part recommendations.
     
@@ -40,6 +43,7 @@ def recommend_parts() -> Tuple[Dict[str, Any], int]:
         JSON response with recommended parts and scores.
     """
     try:
+        user_id = get_jwt_identity()
         data = request.get_json()
         
         if not data:
@@ -67,6 +71,15 @@ def recommend_parts() -> Tuple[Dict[str, Any], int]:
         if not isinstance(existing_parts, list):
             return jsonify({'error': 'existing_parts must be an array'}), 400
         
+        # Verify existing parts belong to user
+        if existing_parts:
+            user_parts = Part.query.filter(
+                Part.id.in_(existing_parts),
+                Part.user_id == user_id
+            ).all()
+            if len(user_parts) != len(existing_parts):
+                return jsonify({'error': 'Some existing parts not found or not owned by you'}), 403
+        
         num_recommendations = data.get('num_recommendations', 10)
         try:
             num_recommendations = int(num_recommendations)
@@ -75,13 +88,14 @@ def recommend_parts() -> Tuple[Dict[str, Any], int]:
         except (ValueError, TypeError):
             return jsonify({'error': 'num_recommendations must be an integer between 1 and 50'}), 400
         
-        # Get recommendations
+        # Get recommendations (filtered by user's parts)
         recommender = get_recommender()
         recommendations = recommender.recommend_parts(
             user_preferences=user_preferences,
             budget=budget,
             existing_parts=existing_parts if existing_parts else None,
-            num_recommendations=num_recommendations
+            num_recommendations=num_recommendations,
+            user_id=user_id  # Filter by user
         )
         
         return jsonify({

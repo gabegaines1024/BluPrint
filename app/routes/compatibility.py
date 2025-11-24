@@ -2,10 +2,11 @@
 
 from typing import Dict, Any, Tuple
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
 import logging
 
 from app.database import db
-from app.models import CompatibilityRule
+from app.models import CompatibilityRule, Part
 from app.services.compatibility_service import check_build_compatibility
 from app.exceptions import ValidationError, NotFoundError
 
@@ -14,9 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 @bp.route('/check', methods=['POST'])
+@jwt_required()
 def check_compatibility() -> Tuple[Dict[str, Any], int]:
-    """Check compatibility of a list of parts."""
+    """Check compatibility of a list of parts (must be owned by user)."""
     try:
+        user_id = get_jwt_identity()
         data = request.get_json()
         
         if not data:
@@ -39,6 +42,19 @@ def check_compatibility() -> Tuple[Dict[str, Any], int]:
             part_ids = [int(pid) for pid in part_ids]
         except (ValueError, TypeError):
             return jsonify({'error': 'All part IDs must be integers'}), 400
+        
+        # Verify all parts belong to the user
+        user_parts = Part.query.filter(
+            Part.id.in_(part_ids),
+            Part.user_id == user_id
+        ).all()
+        
+        if len(user_parts) != len(part_ids):
+            found_ids = {part.id for part in user_parts}
+            missing_ids = set(part_ids) - found_ids
+            return jsonify({
+                'error': f'Parts not found or not owned by you: {missing_ids}'
+            }), 403
         
         # Check compatibility
         result = check_build_compatibility(part_ids)
