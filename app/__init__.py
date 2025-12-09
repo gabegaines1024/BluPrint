@@ -121,7 +121,14 @@ def create_app(config_name: str = 'default') -> Flask:
     db.init_app(app)
     migrate.init_app(app, db)
     cache.init_app(app)
-    CORS(app)
+    
+    # Configure CORS
+    cors_origins = getattr(app.config, 'CORS_ORIGINS', ['*'])
+    if cors_origins and cors_origins != ['*']:
+        CORS(app, origins=cors_origins)
+    else:
+        CORS(app)
+    
     JWTManager(app)
     Bcrypt(app)
     
@@ -132,12 +139,13 @@ def create_app(config_name: str = 'default') -> Flask:
     register_error_handlers(app)
     
     # Register blueprints
-    from app.routes import auth, parts, compatibility, builds, recommendations
+    from app.routes import auth, parts, compatibility, builds, recommendations, agent
     app.register_blueprint(auth.bp, url_prefix='/api/v1/auth')
     app.register_blueprint(parts.bp, url_prefix='/api/v1/parts')
     app.register_blueprint(compatibility.bp, url_prefix='/api/v1/compatibility')
     app.register_blueprint(builds.bp, url_prefix='/api/v1/builds')
     app.register_blueprint(recommendations.bp, url_prefix='/api/v1/recommendations')
+    app.register_blueprint(agent.bp, url_prefix='/api/v1/agent')
     
     # Serve frontend files
     @app.route('/')

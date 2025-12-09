@@ -7,7 +7,7 @@ import logging
 
 from app.database import db
 from app.services.auth_service import AuthService
-from app.exceptions import ValidationError, AuthenticationError
+from app.exceptions import ValidationError, AuthenticationError, NotFoundError
 from app.models import User
 
 bp = Blueprint('auth', __name__)

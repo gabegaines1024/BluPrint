@@ -2,12 +2,23 @@
 
 let allParts = [];
 let selectedParts = [];
+let currentUser = null;
 
-document.addEventListener('DOMContentLoaded', () => {
+// Authentication state management
+window.handleAuthError = function() {
+    showStatus('Session expired. Please login again.', 'error');
+    showLoginModal();
+    updateAuthUI();
+};
+
+document.addEventListener('DOMContentLoaded', async () => {
     checkHealth();
-    loadParts();
-    loadBuilds();
-    loadRules();
+    await checkAuthentication();
+    if (currentUser) {
+        loadParts();
+        loadBuilds();
+        loadRules();
+    }
 });
 
 function showStatus(message, type = 'info') {
@@ -34,7 +45,109 @@ async function checkHealth() {
     }
 }
 
+async function checkAuthentication() {
+    const token = localStorage.getItem('bluprint_auth_token');
+    if (!token) {
+        updateAuthUI();
+        showLoginModal();
+        return;
+    }
+
+    try {
+        const response = await AuthAPI.getCurrentUser();
+        currentUser = response.user;
+        updateAuthUI();
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        localStorage.removeItem('bluprint_auth_token');
+        updateAuthUI();
+        showLoginModal();
+    }
+}
+
+function updateAuthUI() {
+    const authButtons = document.getElementById('auth-buttons');
+    const userInfo = document.getElementById('user-info');
+    const usernameDisplay = document.getElementById('username-display');
+
+    if (currentUser) {
+        authButtons.style.display = 'none';
+        userInfo.style.display = 'block';
+        usernameDisplay.textContent = currentUser.username;
+    } else {
+        authButtons.style.display = 'block';
+        userInfo.style.display = 'none';
+    }
+}
+
+async function handleLogin(event) {
+    event.preventDefault();
+    const username = document.getElementById('login-username').value;
+    const password = document.getElementById('login-password').value;
+
+    try {
+        const response = await AuthAPI.login(username, password);
+        currentUser = response.user;
+        updateAuthUI();
+        closeModal('login-modal');
+        document.getElementById('login-form').reset();
+        showStatus('Login successful!', 'success');
+        loadParts();
+        loadBuilds();
+        loadRules();
+    } catch (error) {
+        showStatus(`Login failed: ${error.message}`, 'error');
+    }
+}
+
+async function handleRegister(event) {
+    event.preventDefault();
+    const username = document.getElementById('register-username').value;
+    const email = document.getElementById('register-email').value;
+    const password = document.getElementById('register-password').value;
+
+    try {
+        const response = await AuthAPI.register(username, email, password);
+        currentUser = response.user;
+        updateAuthUI();
+        closeModal('register-modal');
+        document.getElementById('register-form').reset();
+        showStatus('Registration successful!', 'success');
+        loadParts();
+        loadBuilds();
+        loadRules();
+    } catch (error) {
+        showStatus(`Registration failed: ${error.message}`, 'error');
+    }
+}
+
+function logout() {
+    AuthAPI.logout();
+    currentUser = null;
+    updateAuthUI();
+    showStatus('Logged out successfully', 'success');
+    showLoginModal();
+    // Clear all data
+    allParts = [];
+    document.getElementById('parts-list').innerHTML = '';
+    document.getElementById('builds-list').innerHTML = '';
+}
+
+function showLoginModal() {
+    document.getElementById('login-modal').style.display = 'block';
+}
+
+function showRegisterModal() {
+    document.getElementById('register-modal').style.display = 'block';
+}
+
 function showTab(tabName, event) {
+    if (!currentUser && tabName !== 'agent') {
+        showStatus('Please login to access this feature', 'error');
+        showLoginModal();
+        return;
+    }
+
     document.querySelectorAll('.tab-content').forEach(tab => {
         tab.classList.remove('active');
     });
@@ -51,15 +164,22 @@ function showTab(tabName, event) {
     } else if (tabName === 'compatibility') {
         loadPartsForCompatibility();
         loadRules();
+    } else if (tabName === 'agent') {
+        initializeAgent();
     }
 }
 
 async function loadParts() {
+    if (!currentUser) return;
     try {
         allParts = await PartsAPI.getAll();
         displayParts(allParts);
     } catch (error) {
-        showStatus(`Error loading parts: ${error.message}`, 'error');
+        if (error.message.includes('Authentication')) {
+            handleAuthError();
+        } else {
+            showStatus(`Error loading parts: ${error.message}`, 'error');
+        }
     }
 }
 
@@ -152,11 +272,16 @@ async function deletePart(id) {
 }
 
 async function loadBuilds() {
+    if (!currentUser) return;
     try {
         const builds = await BuildsAPI.getAll();
         displayBuilds(builds);
     } catch (error) {
-        showStatus(`Error loading builds: ${error.message}`, 'error');
+        if (error.message.includes('Authentication')) {
+            handleAuthError();
+        } else {
+            showStatus(`Error loading builds: ${error.message}`, 'error');
+        }
     }
 }
 
@@ -347,5 +472,164 @@ function closeModal(modalId) {
 window.onclick = function(event) {
     if (event.target.classList.contains('modal')) {
         event.target.style.display = 'none';
+    }
+}
+
+// Agent functionality
+let agentMessages = [];
+
+async function initializeAgent() {
+    const chatMessages = document.getElementById('chat-messages');
+    if (chatMessages.children.length === 0) {
+        addAgentMessage('Hello! I\'m your PC building assistant. I can help you:\n- Find parts within your budget\n- Check compatibility\n- Build a complete PC step by step\n\nWhat would you like to build today?', 'agent');
+    }
+}
+
+async function sendAgentMessage() {
+    const input = document.getElementById('chat-input');
+    const message = input.value.trim();
+    
+    if (!message) return;
+    
+    if (!currentUser) {
+        showStatus('Please login to use the agent', 'error');
+        showLoginModal();
+        return;
+    }
+
+    // Add user message
+    addAgentMessage(message, 'user');
+    input.value = '';
+
+    // Show loading
+    const loadingId = addAgentMessage('Thinking...', 'agent', true);
+
+    try {
+        const response = await AgentAPI.chat(message);
+        
+        // Remove loading message
+        const loadingEl = document.getElementById(loadingId);
+        if (loadingEl) loadingEl.remove();
+
+        // Add agent response
+        addAgentMessage(response.message, 'agent');
+
+        // If there are recommended parts, display them
+        if (response.recommended_parts && response.recommended_parts.length > 0) {
+            displayRecommendedParts(response.recommended_parts);
+        }
+
+        // If there's a build suggestion, show it
+        if (response.build_suggestion) {
+            displayBuildSuggestion(response.build_suggestion);
+        }
+    } catch (error) {
+        const loadingEl = document.getElementById(loadingId);
+        if (loadingEl) loadingEl.remove();
+        addAgentMessage(`Sorry, I encountered an error: ${error.message}`, 'agent');
+        if (error.message.includes('Authentication')) {
+            handleAuthError();
+        }
+    }
+}
+
+function handleChatKeyPress(event) {
+    if (event.key === 'Enter') {
+        sendAgentMessage();
+    }
+}
+
+function addAgentMessage(text, type, isLoading = false) {
+    const chatMessages = document.getElementById('chat-messages');
+    const messageId = 'msg-' + Date.now();
+    const messageDiv = document.createElement('div');
+    messageDiv.id = messageId;
+    messageDiv.className = `chat-message ${type}`;
+    
+    if (isLoading) {
+        messageDiv.innerHTML = `<div class="chat-text">${text}</div>`;
+    } else {
+        messageDiv.innerHTML = `<div class="chat-text">${text.replace(/\n/g, '<br>')}</div>`;
+    }
+    
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    
+    return messageId;
+}
+
+function displayRecommendedParts(parts) {
+    const chatMessages = document.getElementById('chat-messages');
+    const partsDiv = document.createElement('div');
+    partsDiv.className = 'recommended-parts';
+    partsDiv.innerHTML = '<strong>Recommended Parts:</strong>';
+    
+    parts.forEach(part => {
+        const partCard = document.createElement('div');
+        partCard.className = 'recommended-part-card';
+        partCard.innerHTML = `
+            <strong>${part.name}</strong>
+            <div>Type: ${part.part_type}</div>
+            ${part.price ? `<div>Price: $${part.price.toFixed(2)}</div>` : ''}
+            ${part.reason ? `<div style="font-size: 0.9em; color: #666;">${part.reason}</div>` : ''}
+            <button class="btn btn-primary" style="margin-top: 5px;" onclick="addPartFromAgent(${part.id})">Add to Build</button>
+        `;
+        partsDiv.appendChild(partCard);
+    });
+    
+    chatMessages.appendChild(partsDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function displayBuildSuggestion(build) {
+    const chatMessages = document.getElementById('chat-messages');
+    const buildDiv = document.createElement('div');
+    buildDiv.className = 'build-suggestion';
+    buildDiv.innerHTML = `
+        <strong>Build Suggestion:</strong>
+        <div>Name: ${build.name || 'Untitled Build'}</div>
+        ${build.total_price ? `<div>Total Price: $${build.total_price.toFixed(2)}</div>` : ''}
+        ${build.is_compatible !== undefined ? `<div>Compatibility: ${build.is_compatible ? '✓ Compatible' : '✗ Issues Found'}</div>` : ''}
+        <button class="btn btn-primary" style="margin-top: 5px;" onclick="saveBuildFromAgent(${JSON.stringify(build).replace(/"/g, '&quot;')})">Save Build</button>
+    `;
+    chatMessages.appendChild(buildDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function addPartFromAgent(partId) {
+    try {
+        const part = await PartsAPI.getById(partId);
+        showStatus(`Part "${part.name}" is already in your catalog`, 'info');
+        loadParts();
+    } catch (error) {
+        showStatus(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function saveBuildFromAgent(buildData) {
+    try {
+        await AgentAPI.saveBuild(buildData);
+        showStatus('Build saved successfully!', 'success');
+        loadBuilds();
+        showTab('builds', null);
+    } catch (error) {
+        showStatus(`Error saving build: ${error.message}`, 'error');
+    }
+}
+
+async function resetAgentConversation() {
+    if (!currentUser) {
+        showStatus('Please login to use the agent', 'error');
+        return;
+    }
+
+    try {
+        await AgentAPI.reset();
+        const chatMessages = document.getElementById('chat-messages');
+        chatMessages.innerHTML = '';
+        initializeAgent();
+        showStatus('Conversation reset', 'success');
+    } catch (error) {
+        showStatus(`Error resetting conversation: ${error.message}`, 'error');
     }
 }

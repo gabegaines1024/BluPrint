@@ -9,8 +9,20 @@
 <body>
     <div class="container">
         <header>
-            <h1>PC Builder</h1>
-            <p class="subtitle">Build your perfect PC with compatibility checking</p>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h1>PC Builder</h1>
+                    <p class="subtitle">Build your perfect PC with compatibility checking</p>
+                </div>
+                <div id="auth-buttons" style="display: none;">
+                    <button class="btn btn-primary" onclick="showLoginModal()">Login</button>
+                    <button class="btn" style="background: #6c757d; color: white; margin-left: 10px;" onclick="showRegisterModal()">Register</button>
+                </div>
+                <div id="user-info" style="display: none;">
+                    <span id="username-display" style="margin-right: 15px; font-weight: bold;"></span>
+                    <button class="btn btn-danger" onclick="logout()">Logout</button>
+                </div>
+            </div>
         </header>
 
         <div class="status-bar" id="status-bar">
@@ -21,6 +33,7 @@
             <button class="tab-button active" onclick="showTab('parts', event)">Parts</button>
             <button class="tab-button" onclick="showTab('builds', event)">Builds</button>
             <button class="tab-button" onclick="showTab('compatibility', event)">Compatibility</button>
+            <button class="tab-button" onclick="showTab('agent', event)">Agent</button>
         </div>
 
         <div id="parts-tab" class="tab-content active">
@@ -72,6 +85,20 @@
                 <div id="rules-list"></div>
             </div>
         </div>
+
+        <div id="agent-tab" class="tab-content">
+            <div class="section-header">
+                <h2>PC Building Agent</h2>
+                <button class="btn" style="background: #6c757d; color: white;" onclick="resetAgentConversation()">Reset Conversation</button>
+            </div>
+            <div class="chat-container">
+                <div id="chat-messages" class="chat-messages"></div>
+                <div class="chat-input-container">
+                    <input type="text" id="chat-input" placeholder="Ask me anything about building your PC..." onkeypress="handleChatKeyPress(event)">
+                    <button class="btn btn-primary" onclick="sendAgentMessage()">Send</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div id="add-part-modal" class="modal">
@@ -116,6 +143,42 @@
                 <div id="build-parts-selector"></div>
                 <button type="submit" class="btn btn-primary">Create Build</button>
             </form>
+        </div>
+    </div>
+
+    <div id="login-modal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('login-modal')">&times;</span>
+            <h2>Login</h2>
+            <form id="login-form" onsubmit="handleLogin(event)">
+                <label>Username or Email:</label>
+                <input type="text" id="login-username" required>
+                <label>Password:</label>
+                <input type="password" id="login-password" required>
+                <button type="submit" class="btn btn-primary">Login</button>
+            </form>
+            <p style="margin-top: 15px; text-align: center;">
+                Don't have an account? <a href="#" onclick="closeModal('login-modal'); showRegisterModal();" style="color: #007bff; cursor: pointer;">Register here</a>
+            </p>
+        </div>
+    </div>
+
+    <div id="register-modal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('register-modal')">&times;</span>
+            <h2>Register</h2>
+            <form id="register-form" onsubmit="handleRegister(event)">
+                <label>Username:</label>
+                <input type="text" id="register-username" required>
+                <label>Email:</label>
+                <input type="email" id="register-email" required>
+                <label>Password:</label>
+                <input type="password" id="register-password" required minlength="6">
+                <button type="submit" class="btn btn-primary">Register</button>
+            </form>
+            <p style="margin-top: 15px; text-align: center;">
+                Already have an account? <a href="#" onclick="closeModal('register-modal'); showLoginModal();" style="color: #007bff; cursor: pointer;">Login here</a>
+            </p>
         </div>
     </div>
 

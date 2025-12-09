@@ -1,16 +1,54 @@
 // API Client for PC Builder
 
-const API_BASE = 'http://localhost:5000/api/v1';
+// Use relative URL for production compatibility, fallback to localhost for dev
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    ? 'http://localhost:5000/api/v1' 
+    : '/api/v1';
+
+// Token management
+const TOKEN_KEY = 'bluprint_auth_token';
+
+function getToken() {
+    return localStorage.getItem(TOKEN_KEY);
+}
+
+function setToken(token) {
+    if (token) {
+        localStorage.setItem(TOKEN_KEY, token);
+    } else {
+        localStorage.removeItem(TOKEN_KEY);
+    }
+}
+
+function clearToken() {
+    localStorage.removeItem(TOKEN_KEY);
+}
 
 async function apiCall(endpoint, options = {}) {
     try {
+        const token = getToken();
+        const headers = {
+            'Content-Type': 'application/json',
+            ...options.headers
+        };
+
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await fetch(`${API_BASE}${endpoint}`, {
             ...options,
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
-            }
+            headers
         });
+
+        // Handle 401 Unauthorized - token expired or invalid
+        if (response.status === 401) {
+            clearToken();
+            if (window.handleAuthError) {
+                window.handleAuthError();
+            }
+            throw new Error('Authentication required. Please login again.');
+        }
 
         const data = await response.json();
 
@@ -88,6 +126,88 @@ const CompatibilityAPI = {
     })
 };
 
+const AuthAPI = {
+    register: async (username, email, password) => {
+        const response = await fetch(`${API_BASE}/auth/register`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ username, email, password })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Registration failed');
+        }
+
+        if (data.access_token) {
+            setToken(data.access_token);
+        }
+        return data;
+    },
+
+    login: async (username, password) => {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ username, password })
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Login failed');
+        }
+
+        if (data.access_token) {
+            setToken(data.access_token);
+        }
+        return data;
+    },
+
+    logout: () => {
+        clearToken();
+    },
+
+    getCurrentUser: async () => {
+        return apiCall('/auth/me');
+    }
+};
+
+const RecommendationsAPI = {
+    recommendParts: (preferences) => apiCall('/recommendations/parts', {
+        method: 'POST',
+        body: JSON.stringify(preferences)
+    }),
+
+    getModelStatus: () => apiCall('/recommendations/model/status')
+};
+
+const AgentAPI = {
+    chat: (message) => apiCall('/agent/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message })
+    }),
+
+    getContext: () => apiCall('/agent/context'),
+
+    reset: () => apiCall('/agent/reset', {
+        method: 'POST'
+    }),
+
+    saveBuild: (buildData) => apiCall('/agent/save-build', {
+        method: 'POST',
+        body: JSON.stringify(buildData)
+    })
+};
+
 const HealthAPI = {
-    check: () => fetch('http://localhost:5000/health').then(r => r.json())
+    check: () => {
+        const healthUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:5000/health'
+            : '/health';
+        return fetch(healthUrl).then(r => r.json());
+    }
 };
