@@ -230,18 +230,116 @@ def _evaluate_rule(rule: CompatibilityRule, part1: Part, part2: Part) -> Dict[st
         }
     
     elif rule_type == 'form_factor':
-        # Check form factor compatibility (e.g., motherboard and case)
-        form_factor1 = specs1.get('form_factor')
-        form_factor2 = specs2.get('form_factor')
-        if form_factor1 and form_factor2:
-            compatible_sizes = rule_data.get('compatible_sizes', [])
-            if form_factor1 not in compatible_sizes or form_factor2 not in compatible_sizes:
-                if form_factor1 != form_factor2:
-                    return {
-                        'is_compatible': False,
-                        'reason': f"{part1.name} (form factor: {form_factor1}) may not fit "
-                                 f"{part2.name} (form factor: {form_factor2})"
-                    }
+        # Check form factor compatibility between Case and Motherboard.
+        # Standard hierarchy:
+        # - ATX cases support: ATX, mATX, ITX
+        # - mATX cases support: mATX, ITX
+        # - ITX cases support: ITX only
+        
+        # Define the compatibility hierarchy mapping case form factors to supported motherboard form factors
+        FORM_FACTOR_HIERARCHY = {
+            'ATX': ['ATX', 'mATX', 'ITX'],
+            'mATX': ['mATX', 'ITX'],
+            'ITX': ['ITX']
+        }
+        
+        # Identify which part is the Case and which is the Motherboard
+        case_part = None
+        motherboard_part = None
+        
+        if part1.part_type == 'Case' and part2.part_type == 'Motherboard':
+            case_part = part1
+            motherboard_part = part2
+        elif part1.part_type == 'Motherboard' and part2.part_type == 'Case':
+            case_part = part2
+            motherboard_part = part1
+        else:
+            # If the rule is applied to wrong part types, skip silently
+            # (This shouldn't happen if rules are configured correctly)
+            return {
+                'is_compatible': True,
+                'reason': None
+            }
+        
+        case_specs = case_part.specifications or {}
+        motherboard_specs = motherboard_part.specifications or {}
+        
+        case_form_factor_raw = case_specs.get('form_factor')
+        motherboard_form_factor_raw = motherboard_specs.get('form_factor')
+        
+        # Normalize form factor values: convert to string and strip whitespace, handle case variations
+        case_form_factor = None
+        motherboard_form_factor = None
+        
+        if case_form_factor_raw is not None:
+            case_ff_str = str(case_form_factor_raw).strip().upper()
+            # Normalize common variations to standard format
+            if case_ff_str in ['MATX', 'MICRO-ATX', 'MICRO ATX', 'MICROATX']:
+                case_form_factor = 'mATX'
+            elif case_ff_str == 'ATX':
+                case_form_factor = 'ATX'
+            elif case_ff_str == 'ITX':
+                case_form_factor = 'ITX'
+            else:
+                # Preserve original value if not recognized
+                case_form_factor = str(case_form_factor_raw).strip()
+        
+        if motherboard_form_factor_raw is not None:
+            mb_ff_str = str(motherboard_form_factor_raw).strip().upper()
+            # Normalize common variations to standard format
+            if mb_ff_str in ['MATX', 'MICRO-ATX', 'MICRO ATX', 'MICROATX']:
+                motherboard_form_factor = 'mATX'
+            elif mb_ff_str == 'ATX':
+                motherboard_form_factor = 'ATX'
+            elif mb_ff_str == 'ITX':
+                motherboard_form_factor = 'ITX'
+            else:
+                # Preserve original value if not recognized
+                motherboard_form_factor = str(motherboard_form_factor_raw).strip()
+        
+        # Validation: Check for missing form factor specifications
+        case_form_factor_missing = not case_form_factor or case_form_factor == ''
+        motherboard_form_factor_missing = not motherboard_form_factor or motherboard_form_factor == ''
+        
+        if case_form_factor_missing and motherboard_form_factor_missing:
+            return {
+                'is_compatible': False,
+                'reason': f"{case_part.name} (Case) and {motherboard_part.name} (Motherboard) are both missing form factor specifications. Form factor is required for compatibility checking."
+            }
+        elif case_form_factor_missing:
+            return {
+                'is_compatible': False,
+                'reason': f"{case_part.name} (Case) is missing a form factor specification. Form factor is required to determine if the motherboard will fit."
+            }
+        elif motherboard_form_factor_missing:
+            return {
+                'is_compatible': False,
+                'reason': f"{motherboard_part.name} (Motherboard) is missing a form factor specification. Form factor is required to determine if it will fit in the case."
+            }
+        
+        # Check compatibility using the hierarchy
+        # Get the list of motherboard form factors supported by the case
+        supported_motherboard_form_factors = FORM_FACTOR_HIERARCHY.get(case_form_factor)
+        
+        if supported_motherboard_form_factors is None:
+            # Unknown case form factor - return warning but don't fail
+            return {
+                'is_compatible': True,
+                'warning': f"Unknown case form factor '{case_form_factor}' for {case_part.name}. Compatibility check skipped."
+            }
+        
+        # Check if the motherboard form factor is supported by the case
+        if motherboard_form_factor not in supported_motherboard_form_factors:
+            return {
+                'is_compatible': False,
+                'reason': f"Motherboard {motherboard_part.name} ({motherboard_form_factor}) is too large for Case {case_part.name} ({case_form_factor}). Case supports: {', '.join(supported_motherboard_form_factors)}."
+            }
+        
+        # Success: Motherboard form factor is compatible with case
+        return {
+            'is_compatible': True,
+            'reason': None
+        }
     
     
     elif rule_type == 'interface_match':
