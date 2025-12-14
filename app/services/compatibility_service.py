@@ -344,15 +344,86 @@ def _evaluate_rule(rule: CompatibilityRule, part1: Part, part2: Part) -> Dict[st
     
     elif rule_type == 'interface_match':
         # Check interface compatibility (e.g., SATA, NVMe)
-        interface1 = specs1.get('interface')
-        interface2 = specs2.get('interface')
+        # Both parts MUST support the required interface for compatibility
         required_interface = rule_data.get('required_interface')
-        if required_interface:
-            if interface1 != required_interface and interface2 != required_interface:
-                return {
-                    'is_compatible': False,
-                    'reason': f"Interface mismatch: {required_interface} required"
-                }
+        
+        # Validation: Check if required_interface is specified
+        if not required_interface:
+            # If no required interface is specified in the rule, skip the check
+            return {
+                'is_compatible': True,
+                'reason': None
+            }
+        
+        # Normalize required_interface to string and strip whitespace
+        required_interface = str(required_interface).strip()
+        
+        # Get interface specifications from both parts
+        interface1_raw = specs1.get('interface')
+        interface2_raw = specs2.get('interface')
+        
+        # Helper function to normalize and check if interface is supported
+        def _part_supports_interface(interface_spec, required: str) -> bool:
+            """Check if a part's interface specification supports the required interface.
+            
+            Args:
+                interface_spec: The interface value from part specifications (can be None, str, or list)
+                required: The required interface string to check for
+            
+            Returns:
+                True if the part supports the required interface, False otherwise
+            """
+            if interface_spec is None:
+                return False
+            
+            # Handle list of interfaces
+            if isinstance(interface_spec, list):
+                # Check if any interface in the list matches (case-insensitive)
+                return any(str(iface).strip().upper() == required.upper() for iface in interface_spec if iface)
+            
+            # Handle string interface
+            if isinstance(interface_spec, str):
+                interface_str = interface_spec.strip()
+                if not interface_str:  # Empty string
+                    return False
+                # Case-insensitive comparison
+                return interface_str.upper() == required.upper()
+            
+            # Handle other types (convert to string)
+            try:
+                interface_str = str(interface_spec).strip()
+                if not interface_str:
+                    return False
+                return interface_str.upper() == required.upper()
+            except (ValueError, TypeError, AttributeError):
+                return False
+        
+        # Check if part1 supports the required interface
+        part1_supports = _part_supports_interface(interface1_raw, required_interface)
+        part2_supports = _part_supports_interface(interface2_raw, required_interface)
+        
+        # Both parts must support the required interface
+        if not part1_supports and not part2_supports:
+            return {
+                'is_compatible': False,
+                'reason': f"Neither {part1.name} ({part1.part_type}) nor {part2.name} ({part2.part_type}) support the required {required_interface} interface."
+            }
+        elif not part1_supports:
+            return {
+                'is_compatible': False,
+                'reason': f"{part1.name} ({part1.part_type}) does not support the required {required_interface} interface for {part2.name} ({part2.part_type})."
+            }
+        elif not part2_supports:
+            return {
+                'is_compatible': False,
+                'reason': f"{part2.name} ({part2.part_type}) does not support the required {required_interface} interface for {part1.name} ({part1.part_type})."
+            }
+        
+        # Success: Both parts support the required interface
+        return {
+            'is_compatible': True,
+            'reason': None
+        }
     
     return {
         'is_compatible': True,
