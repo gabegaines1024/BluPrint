@@ -50,8 +50,20 @@ def check_build_compatibility(part_ids: List[int]) -> Dict[str, Any]:
     for part in parts:
         parts_by_type.setdefault(part.part_type, []).append(part)
     
-    # Check each rule against the parts
-    for rule in rules:
+    # Separate power_requirement rules (they need all parts, not pairs)
+    pairwise_rules = [r for r in rules if r.rule_type != 'power_requirement']
+    power_rules = [r for r in rules if r.rule_type == 'power_requirement']
+    
+    # Check power requirement rules (operate on all parts)
+    for rule in power_rules:
+        power_result = _check_power_requirement(parts, parts_by_type)
+        if not power_result['is_compatible']:
+            issues.append(power_result['reason'])
+        elif power_result.get('warning'):
+            warnings.append(power_result['warning'])
+    
+    # Check pairwise rules (socket_match, form_factor, interface_match, etc.)
+    for rule in pairwise_rules:
         part_type_1_parts = parts_by_type.get(rule.part_type_1, [])
         part_type_2_parts = parts_by_type.get(rule.part_type_2, [])
         
@@ -231,15 +243,6 @@ def _evaluate_rule(rule: CompatibilityRule, part1: Part, part2: Part) -> Dict[st
                                  f"{part2.name} (form factor: {form_factor2})"
                     }
     
-    elif rule_type == 'power_requirement':
-        # Check power requirements
-        power_req = specs1.get('power_consumption') or specs2.get('power_consumption')
-        psu_wattage = specs1.get('wattage') or specs2.get('wattage')
-        if power_req and psu_wattage and power_req > psu_wattage:
-            return {
-                'is_compatible': False,
-                'reason': f"Power requirement ({power_req}W) exceeds PSU capacity ({psu_wattage}W)"
-            }
     
     elif rule_type == 'interface_match':
         # Check interface compatibility (e.g., SATA, NVMe)
@@ -257,6 +260,117 @@ def _evaluate_rule(rule: CompatibilityRule, part1: Part, part2: Part) -> Dict[st
         'is_compatible': True,
         'reason': None
     }
+
+
+def _check_power_requirement(all_parts: List[Part], 
+                             parts_by_type: Dict[str, List[Part]]) -> Dict[str, Any]:
+    """Check if total power consumption of all parts exceeds PSU capacity.
+    
+    This function:
+    1. Identifies the PSU part(s) in the build
+    2. Sums power consumption from all non-PSU parts
+    3. Compares total consumption against PSU wattage
+    
+    Args:
+        all_parts: List of all parts in the build.
+        parts_by_type: Dictionary grouping parts by their type.
+    
+    Returns:
+        Dictionary containing:
+            - is_compatible: Boolean indicating compatibility
+            - reason: String explaining incompatibility (if any)
+            - warning: Optional warning message
+    """
+    # Find PSU part(s)
+    psu_parts = parts_by_type.get('PSU', [])
+    
+    # Validation: Check if PSU exists
+    if not psu_parts:
+        return {
+            'is_compatible': False,
+            'reason': 'Build is missing a Power Supply Unit (PSU). A PSU is required to power all components.'
+        }
+    
+    # If multiple PSUs, use the one with highest wattage
+    # (or could return an error/warning - for now, use the highest)
+    psu = None
+    max_wattage = 0
+    for p in psu_parts:
+        specs = p.specifications or {}
+        wattage = specs.get('wattage')
+        if wattage is not None:
+            try:
+                wattage_float = float(wattage)
+                if wattage_float > max_wattage:
+                    max_wattage = wattage_float
+                    psu = p
+            except (ValueError, TypeError):
+                continue
+    
+    # Validation: Check if PSU has wattage specification
+    if psu is None:
+        if len(psu_parts) == 1:
+            return {
+                'is_compatible': False,
+                'reason': f"{psu_parts[0].name} (PSU) is missing a wattage specification. PSU wattage is required for power compatibility checking."
+            }
+        else:
+            return {
+                'is_compatible': False,
+                'reason': f"All PSU parts are missing wattage specifications. PSU wattage is required for power compatibility checking."
+            }
+    
+    psu_specs = psu.specifications or {}
+    psu_wattage = float(psu_specs.get('wattage'))
+    
+    # Sum power consumption from all non-PSU parts
+    total_power_consumption = 0.0
+    parts_missing_power_spec = []
+    
+    for part in all_parts:
+        # Skip PSU parts
+        if part.part_type == 'PSU':
+            continue
+        
+        specs = part.specifications or {}
+        power_consumption = specs.get('power_consumption')
+        
+        if power_consumption is None:
+            # Parts missing power consumption spec
+            parts_missing_power_spec.append(part.name)
+        else:
+            try:
+                power_float = float(power_consumption)
+                if power_float > 0:  # Only add positive values
+                    total_power_consumption += power_float
+            except (ValueError, TypeError):
+                # Invalid power_consumption value
+                parts_missing_power_spec.append(part.name)
+    
+    # Round to 2 decimal places for display
+    total_power_consumption = round(total_power_consumption, 2)
+    
+    # Validation: Check for parts missing power consumption specs
+    if parts_missing_power_spec:
+        warning_msg = f"Some parts are missing power consumption specifications: {', '.join(parts_missing_power_spec)}. Power compatibility check may be inaccurate."
+        # Return as warning, but continue with calculation
+        result = {
+            'is_compatible': True,
+            'warning': warning_msg
+        }
+    else:
+        result = {
+            'is_compatible': True
+        }
+    
+    # Compare total consumption against PSU wattage
+    if total_power_consumption > psu_wattage:
+        return {
+            'is_compatible': False,
+            'reason': f"Total power consumption ({total_power_consumption}W) exceeds PSU capacity ({psu_wattage}W). Build requires at least {total_power_consumption}W but PSU provides {psu_wattage}W."
+        }
+    
+    return result
 
 
 def _check_required_part_types(parts_by_type: Dict[str, List[Part]], 
