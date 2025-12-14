@@ -5,6 +5,78 @@ from app.models import Part, CompatibilityRule
 from app.database import db
 from app.exceptions import NotFoundError
 
+# Mapping of part types to their critical specification keys required for compatibility checking
+CRITICAL_SPECS_MAP: Dict[str, List[str]] = {
+    'CPU': ['socket', 'power_consumption'],
+    'Motherboard': ['socket', 'form_factor'],
+    'Case': ['form_factor'],
+    'PSU': ['wattage'],
+    'GPU': ['power_consumption'],
+    'Storage': ['interface'],
+    'RAM': ['power_consumption'],  # RAM typically has low power consumption, but useful for accurate totals
+    'Cooler': ['socket_compatibility']  # For cooler compatibility with CPU socket
+}
+
+
+def _check_missing_critical_specs(parts: List[Part]) -> List[str]:
+    """Check all parts for missing critical specifications.
+    
+    This function validates that all parts have the required critical specifications
+    defined in CRITICAL_SPECS_MAP. Missing critical specs are returned as warnings
+    (non-blocking issues) to alert users without preventing compatibility checks.
+    
+    Args:
+        parts: List of Part objects to validate.
+    
+    Returns:
+        List of warning messages for missing critical specifications.
+    """
+    warnings: List[str] = []
+    
+    for part in parts:
+        part_type = part.part_type
+        required_specs = CRITICAL_SPECS_MAP.get(part_type, [])
+        
+        # Skip if this part type has no critical specs defined
+        if not required_specs:
+            continue
+        
+        # Get part specifications (handle None)
+        specs = part.specifications or {}
+        
+        # Check each required specification
+        for spec_key in required_specs:
+            spec_value = specs.get(spec_key)
+            
+            # Check if specification is missing or empty
+            is_missing = False
+            
+            if spec_value is None:
+                is_missing = True
+            elif isinstance(spec_value, str):
+                # Empty string is considered missing
+                if not spec_value.strip():
+                    is_missing = True
+            elif isinstance(spec_value, list):
+                # Empty list is considered missing
+                if len(spec_value) == 0:
+                    is_missing = True
+            elif isinstance(spec_value, (int, float)):
+                # Zero or negative values might be considered missing for some specs
+                # But we'll only flag None/empty as missing to avoid false positives
+                pass  # Numeric zero is valid (e.g., 0W power consumption)
+            else:
+                # For other types, check if it's falsy
+                if not spec_value:
+                    is_missing = True
+            
+            if is_missing:
+                warnings.append(
+                    f"Part {part.name} ({part_type}) is missing the critical specification: {spec_key}."
+                )
+    
+    return warnings
+
 
 def check_build_compatibility(part_ids: List[int]) -> Dict[str, Any]:
     """Check if a list of parts are compatible with each other.
@@ -39,11 +111,14 @@ def check_build_compatibility(part_ids: List[int]) -> Dict[str, Any]:
         missing_ids = set(part_ids) - found_ids
         raise NotFoundError(f"Parts not found: {', '.join(map(str, missing_ids))}")
     
+    # STEP 1: Check for missing critical specifications (pre-validation)
+    # This acts as a safety net before compatibility rules are evaluated
+    warnings: List[str] = _check_missing_critical_specs(parts)
+    
     # Fetch all active compatibility rules
     rules = CompatibilityRule.query.filter_by(is_active=True).all()
     
     issues: List[str] = []
-    warnings: List[str] = []
     
     # Group parts by type for easier checking
     parts_by_type: Dict[str, List[Part]] = {}
