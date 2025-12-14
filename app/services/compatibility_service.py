@@ -172,15 +172,50 @@ def _evaluate_rule(rule: CompatibilityRule, part1: Part, part2: Part) -> Dict[st
     specs2 = part2.specifications or {}
     
     if rule_type == 'socket_match':
-        # Check if CPU socket matches motherboard socket
-        socket1 = specs1.get('socket')
-        socket2 = specs2.get('socket')
-        if socket1 and socket2 and socket1 != socket2:
+        # Validate socket compatibility between CPU and Motherboard.
+        # Requirements:
+        # - Both parts MUST have a socket specification defined
+        # - Socket values must be non-empty strings
+        # - Socket values must match exactly (case-sensitive, whitespace-sensitive)
+        socket1_raw = specs1.get('socket')
+        socket2_raw = specs2.get('socket')
+        
+        # Normalize socket values: convert to string and strip whitespace
+        socket1 = str(socket1_raw).strip() if socket1_raw is not None else None
+        socket2 = str(socket2_raw).strip() if socket2_raw is not None else None
+        
+        # Validation: Check for missing or empty socket fields (critical)
+        socket1_missing = not socket1 or socket1 == ''
+        socket2_missing = not socket2 or socket2 == ''
+        
+        if socket1_missing and socket2_missing:
             return {
                 'is_compatible': False,
-                'reason': f"{part1.name} (socket: {socket1}) is incompatible with "
-                         f"{part2.name} (socket: {socket2})"
+                'reason': f"{part1.name} ({part1.part_type}) and {part2.name} ({part2.part_type}) are both missing socket specifications. Socket type is required for compatibility checking."
             }
+        elif socket1_missing:
+            return {
+                'is_compatible': False,
+                'reason': f"{part1.name} ({part1.part_type}) is missing a socket specification. Socket type is required for compatibility checking."
+            }
+        elif socket2_missing:
+            return {
+                'is_compatible': False,
+                'reason': f"{part2.name} ({part2.part_type}) is missing a socket specification. Socket type is required for compatibility checking."
+            }
+        
+        # Match requirement: Both sockets exist - verify they match exactly
+        if socket1 != socket2:
+            return {
+                'is_compatible': False,
+                'reason': f"{part1.name} (socket: {socket1}) is incompatible with {part2.name} (socket: {socket2}). Socket types must match exactly."
+            }
+        
+        # Success: Sockets match exactly - compatible
+        return {
+            'is_compatible': True,
+            'reason': None
+        }
     
     elif rule_type == 'form_factor':
         # Check form factor compatibility (e.g., motherboard and case)
