@@ -1,22 +1,29 @@
 """API routes for ML-based part recommendations."""
 
-from typing import Dict, Any, Tuple
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
 import logging
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
+from app.database import get_db
+from app.schemas import (
+    RecommendationRequest,
+    RecommendationResponse,
+    ModelStatusResponse
+)
+from app.models import Part, User
+from app.dependencies import get_current_user
 from app.ml_model.recommender import MLRecommender
-from app.models import Part
-from app.exceptions import ValidationError
 
-bp = Blueprint('recommendations', __name__)
+router = APIRouter(prefix="/api/v1/recommendations", tags=["Recommendations"])
 logger = logging.getLogger(__name__)
 
+# Global recommender instance
 _recommender: MLRecommender = None
 
 
 def get_recommender() -> MLRecommender:
-    """Get or create the ML recommender instance.
+    """
+    Get or create the ML recommender instance.
     
     Returns:
         MLRecommender instance.
@@ -27,105 +34,97 @@ def get_recommender() -> MLRecommender:
     return _recommender
 
 
-@bp.route('/parts', methods=['POST'])
-@jwt_required()
-def recommend_parts() -> Tuple[Dict[str, Any], int]:
-    """Get ML-based part recommendations.
+@router.post("/parts", response_model=RecommendationResponse)
+async def recommend_parts(
+    request_data: RecommendationRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get ML-based part recommendations.
     
-    Request Body:
-        part_type: Type of part to recommend (optional).
-        budget: Budget constraint in USD (required).
-        existing_parts: Array of part IDs already selected (optional).
-        min_performance: Minimum performance score 0-10 (optional, default: 5).
-        num_recommendations: Number of recommendations (optional, default: 10).
+    Args:
+        request_data: Recommendation request with preferences and constraints.
+        current_user: Current authenticated user.
+        db: Database session.
     
     Returns:
-        JSON response with recommended parts and scores.
+        RecommendationResponse with recommended parts and scores.
+    
+    Raises:
+        HTTPException: If recommendation generation fails.
     """
     try:
-        user_id = get_jwt_identity()
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({'error': 'Request body is required'}), 400
-        
-        budget = data.get('budget')
-        if budget is None:
-            return jsonify({'error': 'Budget is required'}), 400
-        
-        try:
-            budget = float(budget)
-            if budget <= 0:
-                raise ValueError('Budget must be positive')
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Budget must be a positive number'}), 400
-        
         user_preferences = {
-            'part_type': data.get('part_type'),
-            'budget': budget,
-            'min_performance': data.get('min_performance', 5),
-            'budget_ratio': data.get('budget_ratio', 0.3)
+            'part_type': request_data.part_type,
+            'budget': request_data.budget,
+            'min_performance': request_data.min_performance,
+            'budget_ratio': request_data.budget_ratio
         }
         
-        existing_parts = data.get('existing_parts', [])
-        if not isinstance(existing_parts, list):
-            return jsonify({'error': 'existing_parts must be an array'}), 400
+        existing_parts = request_data.existing_parts or []
         
         # Verify existing parts belong to user
         if existing_parts:
-            user_parts = Part.query.filter(
+            user_parts = db.query(Part).filter(
                 Part.id.in_(existing_parts),
-                Part.user_id == user_id
+                Part.user_id == current_user.id
             ).all()
             if len(user_parts) != len(existing_parts):
-                return jsonify({'error': 'Some existing parts not found or not owned by you'}), 403
-        
-        num_recommendations = data.get('num_recommendations', 10)
-        try:
-            num_recommendations = int(num_recommendations)
-            if num_recommendations < 1 or num_recommendations > 50:
-                raise ValueError('num_recommendations must be between 1 and 50')
-        except (ValueError, TypeError):
-            return jsonify({'error': 'num_recommendations must be an integer between 1 and 50'}), 400
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail='Some existing parts not found or not owned by you'
+                )
         
         # Get recommendations (filtered by user's parts)
         recommender = get_recommender()
         recommendations = recommender.recommend_parts(
             user_preferences=user_preferences,
-            budget=budget,
+            budget=request_data.budget,
             existing_parts=existing_parts if existing_parts else None,
-            num_recommendations=num_recommendations,
-            user_id=user_id  # Filter by user
+            num_recommendations=request_data.num_recommendations,
+            user_id=current_user.id  # Filter by user
         )
         
-        return jsonify({
-            'recommendations': recommendations,
-            'count': len(recommendations),
-            'model_version': recommender.model_version if recommender.is_available() else 'rule-based'
-        }), 200
+        return RecommendationResponse(
+            recommendations=recommendations,
+            count=len(recommendations),
+            model_version=recommender.model_version if recommender.is_available() else 'rule-based'
+        )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f'Error generating recommendations: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to generate recommendations'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to generate recommendations'
+        )
 
 
-@bp.route('/model/status', methods=['GET'])
-def model_status() -> Tuple[Dict[str, Any], int]:
-    """Get status of the ML recommendation model.
+@router.get("/model/status", response_model=ModelStatusResponse)
+async def model_status():
+    """
+    Get status of the ML recommendation model.
     
     Returns:
-        JSON response with model status information.
+        ModelStatusResponse with model information.
+    
+    Raises:
+        HTTPException: If status retrieval fails.
     """
     try:
         recommender = get_recommender()
         
-        return jsonify({
-            'available': recommender.is_available(),
-            'model_version': recommender.model_version,
-            'model_path': str(recommender.model_path) if recommender.model_path else None
-        }), 200
+        return ModelStatusResponse(
+            available=recommender.is_available(),
+            model_version=recommender.model_version,
+            model_path=str(recommender.model_path) if recommender.model_path else None
+        )
         
     except Exception as e:
         logger.error(f'Error getting model status: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to get model status'}), 500
-
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to get model status'
+        )

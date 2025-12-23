@@ -1,144 +1,166 @@
 """API routes for authentication."""
 
-from typing import Dict, Any, Tuple
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
 import logging
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
-from app.database import db
+from app.database import get_db
+from app.schemas import UserCreate, UserLogin, UserUpdate, UserResponse, TokenResponse
 from app.services.auth_service import AuthService
+from app.dependencies import get_current_user
 from app.exceptions import ValidationError, AuthenticationError, NotFoundError
 from app.models import User
 
-bp = Blueprint('auth', __name__)
+router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 logger = logging.getLogger(__name__)
 
 
-@bp.route('/register', methods=['POST'])
-def register() -> Tuple[Dict[str, Any], int]:
-    """Register a new user.
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+    """
+    Register a new user.
     
-    Request Body:
-        username: Unique username (required).
-        email: Unique email address (required).
-        password: Password (required, min 6 characters).
+    Args:
+        user_data: User registration data (username, email, password).
+        db: Database session.
     
     Returns:
-        JSON response with user data and access token.
+        TokenResponse with user data and access token.
+    
+    Raises:
+        HTTPException: If registration fails.
     """
     try:
-        data = request.get_json()
+        result = AuthService.register_user(
+            user_data.username,
+            user_data.email,
+            user_data.password,
+            db
+        )
         
-        if not data:
-            return jsonify({'error': 'Request body is required'}), 400
-        
-        username = data.get('username')
-        email = data.get('email')
-        password = data.get('password')
-        
-        if not username or not email or not password:
-            return jsonify({'error': 'Username, email, and password are required'}), 400
-        
-        result = AuthService.register_user(username, email, password)
-        
-        logger.info(f'User registered: {username}')
-        return jsonify(result), 201
+        logger.info(f'User registered: {user_data.username}')
+        return result
         
     except ValidationError as e:
-        return jsonify({'error': e.message}), e.status_code
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     except Exception as e:
-        db.session.rollback()
+        db.rollback()
         logger.error(f'Error registering user: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to register user'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to register user'
+        )
 
 
-@bp.route('/login', methods=['POST'])
-def login() -> Tuple[Dict[str, Any], int]:
-    """Authenticate a user and return access token.
+@router.post("/login", response_model=TokenResponse)
+async def login(credentials: UserLogin, db: Session = Depends(get_db)):
+    """
+    Authenticate a user and return access token.
     
-    Request Body:
-        username: Username or email (required).
-        password: Password (required).
+    Args:
+        credentials: User login credentials (username, password).
+        db: Database session.
     
     Returns:
-        JSON response with user data and access token.
+        TokenResponse with user data and access token.
+    
+    Raises:
+        HTTPException: If authentication fails.
     """
     try:
-        data = request.get_json()
+        result = AuthService.login_user(
+            credentials.username,
+            credentials.password,
+            db
+        )
         
-        if not data:
-            return jsonify({'error': 'Request body is required'}), 400
-        
-        username = data.get('username')
-        password = data.get('password')
-        
-        if not username or not password:
-            return jsonify({'error': 'Username and password are required'}), 400
-        
-        result = AuthService.login_user(username, password)
-        
-        logger.info(f'User logged in: {username}')
-        return jsonify(result), 200
+        logger.info(f'User logged in: {credentials.username}')
+        return result
         
     except AuthenticationError as e:
-        return jsonify({'error': e.message}), e.status_code
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     except Exception as e:
         logger.error(f'Error logging in user: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to authenticate user'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to authenticate user'
+        )
 
 
-@bp.route('/me', methods=['GET'])
-@jwt_required()
-def get_current_user() -> Tuple[Dict[str, Any], int]:
-    """Get current authenticated user information.
+@router.get("/me", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """
+    Get current authenticated user information.
+    
+    Args:
+        current_user: Current authenticated user from JWT token.
     
     Returns:
-        JSON response with current user data.
+        UserResponse with current user data.
     """
-    try:
-        user_id = get_jwt_identity()
-        user = AuthService.get_user_by_id(user_id)
-        
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
-        
-        return jsonify({'user': user.to_dict()}), 200
-        
-    except Exception as e:
-        logger.error(f'Error getting current user: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to get user information'}), 500
+    return UserResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        is_active=current_user.is_active,
+        created_at=current_user.created_at
+    )
 
 
-@bp.route('/me', methods=['PUT'])
-@jwt_required()
-def update_current_user() -> Tuple[Dict[str, Any], int]:
-    """Update current authenticated user information.
+@router.put("/me", response_model=UserResponse)
+async def update_current_user_info(
+    update_data: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update current authenticated user information.
     
-    Request Body:
-        email: New email address (optional).
-        password: New password (optional).
+    Args:
+        update_data: User update data (email, password).
+        current_user: Current authenticated user.
+        db: Database session.
     
     Returns:
-        JSON response with updated user data.
+        UserResponse with updated user data.
+    
+    Raises:
+        HTTPException: If update fails.
     """
     try:
-        user_id = get_jwt_identity()
-        data = request.get_json()
+        # Build update dict with only provided fields
+        update_dict = {}
+        if update_data.email is not None:
+            update_dict['email'] = update_data.email
+        if update_data.password is not None:
+            update_dict['password'] = update_data.password
         
-        if not data:
-            return jsonify({'error': 'No data provided for update'}), 400
+        if not update_dict:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='No data provided for update'
+            )
         
-        user = AuthService.update_user(user_id, **data)
+        user = AuthService.update_user(current_user.id, db, **update_dict)
         
-        logger.info(f'User updated: {user_id}')
-        return jsonify({'user': user.to_dict(), 'message': 'User updated successfully'}), 200
+        logger.info(f'User updated: {current_user.id}')
+        return UserResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            is_active=user.is_active,
+            created_at=user.created_at
+        )
         
     except ValidationError as e:
-        return jsonify({'error': e.message}), e.status_code
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     except NotFoundError as e:
-        return jsonify({'error': e.message}), e.status_code
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     except Exception as e:
-        db.session.rollback()
+        db.rollback()
         logger.error(f'Error updating user: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to update user'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to update user'
+        )
 

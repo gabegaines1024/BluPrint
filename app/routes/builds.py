@@ -1,79 +1,131 @@
 """API routes for PC builds management."""
 
-from typing import Dict, Any, Tuple
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
 import logging
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
-from app.database import db
-from app.models import Build, Part
+from app.database import get_db
+from app.schemas import BuildCreate, BuildUpdate, BuildResponse
+from app.models import Build, Part, User
+from app.dependencies import get_current_user
 from app.services.compatibility_service import (
     check_build_compatibility,
     calculate_build_price
 )
-from app.utils.validation import validate_build_data
-from app.exceptions import ValidationError, NotFoundError, AuthorizationError
+from app.exceptions import ValidationError, NotFoundError
 
-bp = Blueprint('builds', __name__)
+router = APIRouter(prefix="/api/v1/builds", tags=["Builds"])
 logger = logging.getLogger(__name__)
 
 
-@bp.route('', methods=['GET'])
-@jwt_required()
-def get_builds() -> Tuple[Dict[str, Any], int]:
-    """Get a list of builds (user's builds only)."""
+@router.get("", response_model=List[BuildResponse])
+async def get_builds(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a list of builds (user's builds only).
+    
+    Args:
+        current_user: Current authenticated user.
+        db: Database session.
+    
+    Returns:
+        List of BuildResponse objects.
+    """
     try:
-        user_id = get_jwt_identity()
-        builds = Build.query.filter_by(user_id=user_id).all()
-        return jsonify([build.to_dict() for build in builds]), 200
+        builds = db.query(Build).filter(Build.user_id == current_user.id).all()
+        return [BuildResponse.model_validate(build) for build in builds]
         
     except Exception as e:
         logger.error(f'Error getting builds: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to retrieve builds'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to retrieve builds'
+        )
 
 
-@bp.route('/<int:build_id>', methods=['GET'])
-@jwt_required()
-def get_build(build_id: int) -> Tuple[Dict[str, Any], int]:
-    """Get a specific build by ID (must be owned by user)."""
+@router.get("/{build_id}", response_model=BuildResponse)
+async def get_build(
+    build_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a specific build by ID (must be owned by user).
+    
+    Args:
+        build_id: Build ID to retrieve.
+        current_user: Current authenticated user.
+        db: Database session.
+    
+    Returns:
+        BuildResponse object.
+    
+    Raises:
+        HTTPException: If build not found.
+    """
     try:
-        user_id = get_jwt_identity()
-        build = Build.query.filter_by(id=build_id, user_id=user_id).first()
+        build = db.query(Build).filter(
+            Build.id == build_id,
+            Build.user_id == current_user.id
+        ).first()
         
         if not build:
-            raise NotFoundError('Build not found')
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Build not found'
+            )
         
-        return jsonify(build.to_dict()), 200
-    except NotFoundError as e:
-        return jsonify({'error': e.message}), e.status_code
+        return BuildResponse.model_validate(build)
+        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f'Error getting build {build_id}: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to retrieve build'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to retrieve build'
+        )
 
 
-@bp.route('', methods=['POST'])
-@jwt_required()
-def create_build() -> Tuple[Dict[str, Any], int]:
-    """Create a new PC build (owned by current user)."""
+@router.post("", response_model=BuildResponse, status_code=status.HTTP_201_CREATED)
+async def create_build(
+    build_data: BuildCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new PC build (owned by current user).
+    
+    Args:
+        build_data: Build creation data.
+        current_user: Current authenticated user.
+        db: Database session.
+    
+    Returns:
+        BuildResponse with created build data.
+    
+    Raises:
+        HTTPException: If creation fails.
+    """
     try:
-        user_id = get_jwt_identity()
-        data = request.get_json()
-        
-        # Validate input
-        validate_build_data(data, is_update=False)
-        
-        part_ids = data['parts']
+        part_ids = build_data.parts
         
         # Verify all parts belong to the user
-        user_parts = Part.query.filter(
+        user_parts = db.query(Part).filter(
             Part.id.in_(part_ids),
-            Part.user_id == user_id
+            Part.user_id == current_user.id
         ).all()
         
         if len(user_parts) != len(part_ids):
             found_ids = {part.id for part in user_parts}
             missing_ids = set(part_ids) - found_ids
-            raise ValidationError(f'Parts not found or not owned by you: {missing_ids}')
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Parts not found or not owned by you: {missing_ids}'
+            )
         
         # Check compatibility
         compat_result = check_build_compatibility(part_ids)
@@ -83,75 +135,105 @@ def create_build() -> Tuple[Dict[str, Any], int]:
         
         # Create build
         build = Build(
-            user_id=user_id,
-            name=data['name'].strip(),
-            description=data.get('description'),
+            user_id=current_user.id,
+            name=build_data.name.strip(),
+            description=build_data.description,
             parts=part_ids,
             total_price=total_price,
             is_compatible=compat_result['is_compatible'],
             compatibility_issues=compat_result.get('issues', [])
         )
         
-        db.session.add(build)
-        db.session.commit()
+        db.add(build)
+        db.commit()
+        db.refresh(build)
         
-        build_dict = build.to_dict()
-        build_dict['compatibility_warnings'] = compat_result.get('warnings', [])
+        # Add warnings to response
+        build_response = BuildResponse.model_validate(build)
+        build_response.compatibility_warnings = compat_result.get('warnings', [])
         
-        logger.info(f'Build created: {build.id} by user {user_id}')
-        return jsonify(build_dict), 201
+        logger.info(f'Build created: {build.id} by user {current_user.id}')
+        return build_response
         
-    except ValidationError as e:
-        return jsonify({'error': e.message}), 400
-    except NotFoundError as e:
-        return jsonify({'error': e.message}), 404
+    except HTTPException:
+        raise
     except Exception as e:
-        db.session.rollback()
+        db.rollback()
         logger.error(f'Error creating build: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to create build'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to create build'
+        )
 
 
-@bp.route('/<int:build_id>', methods=['PUT'])
-@jwt_required()
-def update_build(build_id: int) -> Tuple[Dict[str, Any], int]:
-    """Update an existing build (must be owned by user)."""
+@router.put("/{build_id}", response_model=BuildResponse)
+async def update_build(
+    build_id: int,
+    build_data: BuildUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update an existing build (must be owned by user).
+    
+    Args:
+        build_id: Build ID to update.
+        build_data: Build update data.
+        current_user: Current authenticated user.
+        db: Database session.
+    
+    Returns:
+        BuildResponse with updated build data.
+    
+    Raises:
+        HTTPException: If build not found or update fails.
+    """
     try:
-        user_id = get_jwt_identity()
-        build = Build.query.filter_by(id=build_id, user_id=user_id).first()
+        build = db.query(Build).filter(
+            Build.id == build_id,
+            Build.user_id == current_user.id
+        ).first()
         
         if not build:
-            raise NotFoundError('Build not found')
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Build not found'
+            )
         
-        data = request.get_json()
+        update_data = build_data.model_dump(exclude_unset=True)
         
-        if not data:
-            return jsonify({'error': 'No data provided for update'}), 400
-        
-        # Validate input
-        validate_build_data(data, is_update=True)
+        if not update_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='No data provided for update'
+            )
         
         # Track if parts changed (need to re-check compatibility)
-        parts_changed = 'parts' in data and data['parts'] != build.parts
+        parts_changed = 'parts' in update_data and update_data['parts'] != build.parts
+        compat_warnings = []
         
-        # Update fields
-        if 'name' in data:
-            build.name = data['name'].strip()
-        if 'description' in data:
-            build.description = data['description']
+        # Update basic fields
+        if 'name' in update_data:
+            build.name = update_data['name'].strip()
+        if 'description' in update_data:
+            build.description = update_data['description']
         
         if parts_changed:
-            part_ids = data['parts']
+            part_ids = update_data['parts']
             
             # Verify all parts belong to the user
-            user_parts = Part.query.filter(
+            user_parts = db.query(Part).filter(
                 Part.id.in_(part_ids),
-                Part.user_id == user_id
+                Part.user_id == current_user.id
             ).all()
             
             if len(user_parts) != len(part_ids):
                 found_ids = {part.id for part in user_parts}
                 missing_ids = set(part_ids) - found_ids
-                raise ValidationError(f'Parts not found or not owned by you: {missing_ids}')
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f'Parts not found or not owned by you: {missing_ids}'
+                )
             
             # Re-check compatibility
             compat_result = check_build_compatibility(part_ids)
@@ -163,46 +245,73 @@ def update_build(build_id: int) -> Tuple[Dict[str, Any], int]:
             build.total_price = total_price
             build.is_compatible = compat_result['is_compatible']
             build.compatibility_issues = compat_result.get('issues', [])
+            compat_warnings = compat_result.get('warnings', [])
         
-        db.session.commit()
+        db.commit()
+        db.refresh(build)
         
-        build_dict = build.to_dict()
+        build_response = BuildResponse.model_validate(build)
         if parts_changed:
-            build_dict['compatibility_warnings'] = compat_result.get('warnings', [])
+            build_response.compatibility_warnings = compat_warnings
         
-        logger.info(f'Build updated: {build_id} by user {user_id}')
-        return jsonify(build_dict), 200
+        logger.info(f'Build updated: {build_id} by user {current_user.id}')
+        return build_response
         
-    except ValidationError as e:
-        return jsonify({'error': e.message}), 400
-    except NotFoundError as e:
-        return jsonify({'error': e.message}), 404
+    except HTTPException:
+        raise
     except Exception as e:
-        db.session.rollback()
+        db.rollback()
         logger.error(f'Error updating build {build_id}: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to update build'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to update build'
+        )
 
 
-@bp.route('/<int:build_id>', methods=['DELETE'])
-@jwt_required()
-def delete_build(build_id: int) -> Tuple[Dict[str, Any], int]:
-    """Delete a build (must be owned by user)."""
+@router.delete("/{build_id}", status_code=status.HTTP_200_OK)
+async def delete_build(
+    build_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a build (must be owned by user).
+    
+    Args:
+        build_id: Build ID to delete.
+        current_user: Current authenticated user.
+        db: Database session.
+    
+    Returns:
+        Success message.
+    
+    Raises:
+        HTTPException: If build not found or deletion fails.
+    """
     try:
-        user_id = get_jwt_identity()
-        build = Build.query.filter_by(id=build_id, user_id=user_id).first()
+        build = db.query(Build).filter(
+            Build.id == build_id,
+            Build.user_id == current_user.id
+        ).first()
         
         if not build:
-            raise NotFoundError('Build not found')
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Build not found'
+            )
         
-        db.session.delete(build)
-        db.session.commit()
+        db.delete(build)
+        db.commit()
         
-        logger.info(f'Build deleted: {build_id} by user {user_id}')
-        return jsonify({'message': 'Build deleted successfully'}), 200
+        logger.info(f'Build deleted: {build_id} by user {current_user.id}')
+        return {"message": "Build deleted successfully"}
         
-    except NotFoundError as e:
-        return jsonify({'error': e.message}), e.status_code
+    except HTTPException:
+        raise
     except Exception as e:
-        db.session.rollback()
+        db.rollback()
         logger.error(f'Error deleting build {build_id}: {e}', exc_info=True)
-        return jsonify({'error': 'Failed to delete build'}), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to delete build'
+        )

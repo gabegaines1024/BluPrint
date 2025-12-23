@@ -1,31 +1,35 @@
 from datetime import datetime
-from flask_bcrypt import Bcrypt
-from app.database import db
+from passlib.context import CryptContext
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, JSON, ForeignKey
+from sqlalchemy.orm import relationship
+from app.database import Base
 
-bcrypt = Bcrypt()
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-class User(db.Model):
+
+class User(Base):
     __tablename__ = 'users'
     
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False, index=True)
-    email = db.Column(db.String(120), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(255), nullable=False)
-    is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(80), unique=True, nullable=False, index=True)
+    email = Column(String(120), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    parts = db.relationship('Part', backref='owner', lazy='dynamic', cascade='all, delete-orphan')
-    builds = db.relationship('Build', backref='owner', lazy='dynamic', cascade='all, delete-orphan')
+    parts = relationship('Part', back_populates='owner', cascade='all, delete-orphan')
+    builds = relationship('Build', back_populates='owner', cascade='all, delete-orphan')
     
     def set_password(self, password: str) -> None:
         """Hash and set the user's password."""
-        self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+        self.password_hash = pwd_context.hash(password)
     
     def check_password(self, password: str) -> bool:
         """Check if the provided password matches the user's password."""
-        return bcrypt.check_password_hash(self.password_hash, password)
+        return pwd_context.verify(password, self.password_hash)
     
     def to_dict(self, include_email: bool = False) -> dict:
         """Convert user to dictionary."""
@@ -42,17 +46,21 @@ class User(db.Model):
     def __repr__(self):
         return f'<User {self.username}>'
 
-class Part(db.Model):
+
+class Part(Base):
     __tablename__ = 'parts'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    name = db.Column(db.String(200), nullable=False)
-    part_type = db.Column(db.String(50), nullable=False)
-    manufacturer = db.Column(db.String(100))
-    price = db.Column(db.Float)
-    specifications = db.Column(db.JSON)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    part_type = Column(String(50), nullable=False)
+    manufacturer = Column(String(100))
+    price = Column(Float)
+    specifications = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    owner = relationship('User', back_populates='parts')
     
     def to_dict(self):
         return {
@@ -65,18 +73,22 @@ class Part(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
-class Build(db.Model):
+
+class Build(Base):
     __tablename__ = 'builds'
     
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    name = db.Column(db.String(200), nullable=False)
-    description = db.Column(db.Text)
-    parts = db.Column(db.JSON)
-    total_price = db.Column(db.Float)
-    is_compatible = db.Column(db.Boolean, default=True)
-    compatibility_issues = db.Column(db.JSON)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text)
+    parts = Column(JSON)
+    total_price = Column(Float)
+    is_compatible = Column(Boolean, default=True)
+    compatibility_issues = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    owner = relationship('User', back_populates='builds')
     
     def to_dict(self):
         return {
@@ -90,15 +102,16 @@ class Build(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
-class CompatibilityRule(db.Model):
+
+class CompatibilityRule(Base):
     __tablename__ = 'compatibility_rules'
     
-    id = db.Column(db.Integer, primary_key=True)
-    part_type_1 = db.Column(db.String(50), nullable=False)
-    part_type_2 = db.Column(db.String(50), nullable=False)
-    rule_type = db.Column(db.String(50), nullable=False)
-    rule_data = db.Column(db.JSON)
-    is_active = db.Column(db.Boolean, default=True)
+    id = Column(Integer, primary_key=True, index=True)
+    part_type_1 = Column(String(50), nullable=False)
+    part_type_2 = Column(String(50), nullable=False)
+    rule_type = Column(String(50), nullable=False)
+    rule_data = Column(JSON)
+    is_active = Column(Boolean, default=True)
     
     def to_dict(self):
         return {
